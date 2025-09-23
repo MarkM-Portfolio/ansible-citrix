@@ -1,0 +1,129 @@
+---
+- name: Get AWS CLI version
+  ansible.windows.win_shell: |
+    aws --version
+  changed_when: False
+  ignore_errors: True
+  register: aws_cli
+
+- name: Setup AWS CLI
+  ansible.windows.win_shell: |
+    $command = "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12"
+    Invoke-Expression $command
+    Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile C:\\AWSCLIV2.msi
+    $arguments = "/i `"C:\\AWSCLIV2.msi`" /quiet"
+    Start-Process msiexec.exe -ArgumentList $arguments -Wait
+    {{ load_sys_env }}
+    [System.Environment]::SetEnvironmentVariable("Path", $env:Path, [System.EnvironmentVariableTarget]::Machine)
+    aws --version
+  register: aws_setup
+  when: aws_cli.rc != 0
+
+- name: Download media
+  ansible.windows.win_shell: |
+    {{ load_sys_env }}
+    aws s3 sync "{{ item.src }}" "{{ item.tgt }}" --exact-timestamps --no-progress
+  args:
+    creates: "{{ item.tgt }}"
+  register: media_setup
+  loop: "{{ s3media }}"
+  retries: 3
+  delay: 10
+  until: media_setup.rc == 0
+
+- name: Install Microsoft Excel 2019 (x64)
+  ansible.windows.win_package:
+    path: "{{ s3media[1].tgt }}\\setup.exe"
+    arguments: /quiet /configure
+  register: excel_setup
+
+- name: Find Citrix Apps ISO
+  ansible.windows.win_find:
+    paths: "{{ s3media[0].tgt }}"
+    patterns: "*.iso"
+  register: citrix_apps_iso
+
+- name: Mount Citrix Apps ISO
+  community.windows.win_disk_image:
+    image_path: "{{ citrix_apps_iso.files[0].path }}"
+    state: present
+  register: disk_image_out
+
+- name: Ensure citrix_apps folder exists in Temp path
+  ansible.windows.win_file:
+    path: "{{ s3media[0].tmp }}"
+    state: directory
+
+- name: Set variable for citrix_apps Temp path
+  ansible.builtin.set_fact:
+    citrix_apps_temp: "{{ s3media[0].tmp }}"
+
+- name: Copy Citrix Apps ISO contents to Temp path
+  ansible.windows.win_copy:
+    src: "{{ disk_image_out.mount_paths[0] }}"
+    dest: "{{ citrix_apps_temp }}"
+    remote_src: yes
+
+- name: Unmount Citrix Apps ISO
+  community.windows.win_disk_image:
+    image_path: "{{ citrix_apps_iso.files[0].path }}"
+    state: absent
+
+- name: Install Vitrual Desktop Application
+  ansible.windows.win_package:
+    path: "{{ citrix_apps_temp }}\\x64\\Xendesktop Setup\\XenDesktopVdaSetup.exe"
+    # arguments: /quiet /verboselog /noreboot /noresume /logpath "{{ vda_config.logpath }}" /portnumber "{{ vda_config.vda_port }}" /controllers "{{ controllers }}" /components "{{ vda_config.components }}" "{{ vda_config.brokered_connections }}" /includeadditional "{{ vda_config.vda_upgrade_agent }}" "{{ vda_config.cloud_vm }}" /enable_hdx_ports /enable_real_time_transport
+    arguments: /quiet /verboselog /noreboot /noresume /logpath "{{ vda_config.logpath }}" /portnumber "{{ vda_config.vda_port }}" /controllers "{{ controllers }}" "{{ vda_config.brokered_connections }}" /includeadditional "{{ vda_config.vda_upgrade_agent }}" "{{ vda_config.cloud_vm }}"
+    expected_return_code: "{{ vda_config.return_codes }}"
+  register: install_vda
+
+- name: debug vda 1
+  debug:
+    msg: "{{ install_vda }}"
+
+- name: Restart server
+  ansible.windows.win_reboot:
+  when: install_vda.rc == 3
+
+- name: Resume VDA install
+  ansible.windows.win_package:
+    path: "{{ citrix_apps_temp }}\\x64\\Xendesktop Setup\\XenDesktopVdaSetup.exe"
+    arguments: /quiet /verboselog /noreboot /noresume /logpath "{{ vda_config.logpath }}"
+    expected_return_code: "{{ vda_config.return_codes }}"
+  when: install_vda.changed
+  register: vda_resume
+
+- name: debug vda 2
+  debug:
+    msg: "{{ vda_resume }}"
+
+- name: Set hostname
+  ansible.windows.win_hostname:
+    name: "{{ hostname }}"
+  register: hostname
+
+- name: Find files
+  ansible.windows.win_find:
+    paths: "C:\\ProgramData\\Citrix\\XendesktopSetup"
+    patterns: "XendesktopVdaSetup.exe"
+  register: vda_install_find
+
+- name: Restart server after VDA install
+  ansible.windows.win_reboot:
+  when: vda_install_find.matched == 0
+
+- name: Housekeeping
+  ansible.windows.win_file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ citrix_apps_temp }}"
+    - "{{ citrix_apps_iso.files[0].path }}"
+    - "C:\\AWSCLIV2.msi"
+
+- name: Disable Administrator account
+  ansible.windows.win_user:
+    name: Administrator
+    state: present
+    account_disabled: yes
+    

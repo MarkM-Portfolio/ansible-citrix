@@ -1,0 +1,27 @@
+---
+instance_id: ""
+hostname: ""
+customer_name: ""
+customer_region: ""
+citrix_private_ip: ""
+s3_media_bucket: "s3://{{ automation_accountid }}-citrix-bucket"
+
+s3media:
+  - src: "{{ s3_media_bucket }}/citrix_apps/Citrix_VDA/"
+    tgt: "C:\\citrix-media\\citrix_apps"
+    tmp: "C:\\Temp\\citrix_apps"
+
+  - src: "{{ s3_media_bucket }}/citrix_apps/Excel2019_64bit/"
+    tgt: "C:\\CDMedia\\Excel 2019 (x64)"
+
+vda_config:
+  vda_port: "{{ vda_port | default(80) if vda_port != '' else 80 }}"
+  controllers: "{{ controllers }}"
+  logpath: "C:\\citrix-media\\citrix_apps\\install_logs"
+  components: "vda,plugins"
+  brokered_connections: "/remotepc"
+  vda_upgrade_agent: "Citrix VDA Upgrade Agent"
+  cloud_vm: "/xendesktopcloud"
+  return_codes: [0, 3, 3010]
+
+load_sys_env: $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
